@@ -37,7 +37,8 @@ def curate_training_image(TI: np.ndarray, template_size: list[int], percentage_2
                 for i, [tx, ty, tz] in enumerate(itertools.product(range(template_size[0]),
                                                                 range(template_size[1]),
                                                                 range(template_size[2]))):
-                    data[xi + yi*template_size_x + zi*template_size_x*template_size_y, i] = TI[x-(tx+padding_x), y-(ty+padding_y), z-(tz+padding_z)]
+                    
+                    data[xi + yi*template_size_x + zi*template_size_x*template_size_y, i] = TI[x+(tx-padding_x), y+(ty-padding_y), z+(tz-padding_z)]
 
     # train some ML model the above tabular data
     center_index = int((np.prod(template_size)-1)/2)

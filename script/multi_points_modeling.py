@@ -114,7 +114,6 @@ def multi_points_modeling(TI,
                                                                                                     verbose = verbose)
     padding_x, padding_y, padding_z = int((template_size[0]-1)/2), int((template_size[1]-1)/2), int((template_size[2]-1)/2)
 
-    
     # for one iteration - randomly generate realization
     np.random.seed(random_seed)
     np.random.shuffle(random_path.T)
@@ -202,6 +201,7 @@ def _run_mps_w_soft_data(realization, facies_ratio, unique_facies,
     if verbose:
         print("Running one iteration of the MPS simulation...")
         start = time.time()
+
     for ii, jj, kk in zip(random_path[0].T, random_path[1].T, random_path[2].T):
         if realization[ii, jj, kk] != -1:
             continue
@@ -211,7 +211,7 @@ def _run_mps_w_soft_data(realization, facies_ratio, unique_facies,
         input_x = template[flag].reshape(1,-1)  
         tau = soft_data[ii-padding_x, jj-padding_y, kk-padding_z, :]
 
-        prob = predictive_model(data_x, data_y,  input_x,  facies_ratio, unique_facies)*tau
+        prob = predictive_model(data_x, data_y, input_x, facies_ratio, unique_facies)*tau
         prob = prob/np.sum(prob)
         realization[ii, jj, kk] = np.random.choice(unique_facies, 
                                                 p=prob)
@@ -276,7 +276,7 @@ def _preprocessing_MPS(TI,
     data_x, data_y, flag = curate_training_image(TI, template_size, 1.0)
 
     # TODO: generate model
-    realization = np.ones((real_nx+2*padding_x, real_ny+2*padding_x, real_nz+2*padding_z))*-1
+    realization = np.ones((real_nx+2*padding_x, real_ny+2*padding_y, real_nz+2*padding_z))*-1
     if hard_data is not None:
         if padding_z != 0:
             realization[padding_x:-padding_x, padding_y:-padding_y, padding_z:-padding_z] = hard_data
@@ -291,22 +291,21 @@ def _preprocessing_MPS(TI,
     random_path = np.array([i.flatten() for i in [xx, yy, zz]])
     return realization, [facies_ratio, unique_facies], [data_x, data_y, flag], random_path
 
-
-    
 def multi_points_modeling_multi_scaled(TI, n_level, level_size,
                                       template_size, 
                                       random_seed, 
-                                      real_nx, real_ny, real_nz, 
-                                      hard_data = None, 
+                                      real_nx, real_ny, real_nz,
+                                      hard_data = None,
+                                      soft_data = None, 
                                       verbose = False):
     
     TI_s, grid_size_s = [], []
     nx, ny, nz = real_nx, real_ny, real_nz
+
     for level in range(n_level):
         TI_s.append(TI[::level_size**level, ::level_size**level, ::level_size**level])
         grid_size_s.append((nx, ny, nz))
         nx, ny, nz = round(nx/level_size), round(ny/level_size), 1
-
 
     real_s = []
     if hard_data is None:
@@ -320,11 +319,14 @@ def multi_points_modeling_multi_scaled(TI, n_level, level_size,
                                     random_seed, 
                                     grid_size_at_level[0], grid_size_at_level[1], grid_size_at_level[2], 
                                     real, 
+                                    soft_data,
                                     verbose)
         real_s.append(real)
+
         if level == 0:
             break
         real_next = np.ones(grid_size_s[level-1]) * -1
         real_next[1::level_size, 1::level_size, :] = real
         real = real_next.copy()
+    
     return real
