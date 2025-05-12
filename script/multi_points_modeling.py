@@ -78,7 +78,7 @@ def predictive_model(data_x, data_y,
 
     return counts / counts.sum()
 
-def multi_points_modeling(TI, 
+def multi_points_modeling(TI_3D, 
                           template_size, 
                           random_seed, 
                           real_nx, real_ny, real_nz, 
@@ -107,7 +107,7 @@ def multi_points_modeling(TI,
     Returns:
         np.ndarray: The generated realization grid with shape (real_nx, real_ny, real_nz).
     """
-    realization, [facies_ratio, unique_facies], [data_x, data_y, flag], random_path = _preprocessing_MPS(TI, 
+    realization, [facies_ratio, unique_facies], [data_x, data_y, flag], random_path = _preprocessing_MPS(TI_3D, 
                                                                                                     template_size,  
                                                                                                     real_nx, real_ny, real_nz, 
                                                                                                     hard_data = hard_data,
@@ -242,7 +242,7 @@ def _remove_padding(realization, padding_x, padding_y, padding_z):
     else:
         return realization[padding_x:-padding_x, padding_y:-padding_y]
 
-def _preprocessing_MPS(TI, 
+def _preprocessing_MPS(TI_3D, 
                       template_size, 
                       real_nx, real_ny, real_nz, 
                       hard_data = None,
@@ -269,11 +269,10 @@ def _preprocessing_MPS(TI,
                                                     a list of the input features (data_x), target outputs (data_y), and a boolean mask (flag),
                                                     and a 3D array of random coordinates to visit in order.
     """
-    unique_facies = list(np.unique(TI).astype(np.int8))
-    facies_ratio = [np.sum(TI==f)/np.prod(TI.shape) for f in unique_facies]
+    unique_facies = list(np.unique(TI_3D).astype(np.int8))
+    facies_ratio = [np.sum(TI_3D==f)/np.prod(TI_3D.shape) for f in unique_facies]
     padding_x, padding_y, padding_z = int((template_size[0]-1)/2), int((template_size[1]-1)/2), int((template_size[2]-1)/2)
-
-    data_x, data_y, flag = curate_training_image(TI, template_size, 1.0)
+    data_x, data_y, flag = curate_training_image(TI_3D, template_size, 1.0)
 
     # TODO: generate model
     realization = np.ones((real_nx+2*padding_x, real_ny+2*padding_y, real_nz+2*padding_z))*-1
@@ -288,7 +287,8 @@ def _preprocessing_MPS(TI,
     y_0, y_1 = int(0 +padding_y), int(realization.shape[1] - padding_y)
     z_0, z_1 = int(0 +padding_z), int(realization.shape[2] - padding_z)
     xx, yy, zz = np.meshgrid(range(x_0, x_1), range(y_0, y_1), range(z_0, z_1))
-    random_path = np.array([i.flatten() for i in [xx, yy, zz]])
+    random_path = np.array([i.flatten() for i in [xx, yy, zz]])x
+    # TODO: random path without hard data
     return realization, [facies_ratio, unique_facies], [data_x, data_y, flag], random_path
 
 def multi_points_modeling_multi_scaled(TI, n_level, level_size,
@@ -305,7 +305,7 @@ def multi_points_modeling_multi_scaled(TI, n_level, level_size,
     for level in range(n_level):
         TI_s.append(TI[::level_size**level, ::level_size**level, ::level_size**level])
         grid_size_s.append((nx, ny, nz))
-        nx, ny, nz = round(nx/level_size), round(ny/level_size), 1
+        nx, ny, nz = round(nx/level_size), round(ny/level_size), round(nz/level_size)
 
     real_s = []
     if hard_data is None:
@@ -326,7 +326,7 @@ def multi_points_modeling_multi_scaled(TI, n_level, level_size,
         if level == 0:
             break
         real_next = np.ones(grid_size_s[level-1]) * -1
-        real_next[1::level_size, 1::level_size, :] = real
+        real_next[1::level_size, 1::level_size, 1::level_size] = real
         real = real_next.copy()
     
     return real
