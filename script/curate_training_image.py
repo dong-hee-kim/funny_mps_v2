@@ -1,7 +1,7 @@
 import numpy as np
 import itertools
 
-def curate_training_image(TI: np.ndarray, template_size: list[int], percentage_2_use: float = 0.8, cross = True):
+def curate_training_image(TI_3D: np.ndarray, template_size: list[int], percentage_2_use: float = 0.8, cross = True):
     # define the training image size and template size
     """
     Curates a training image by extracting a tabular form dataset based on the provided template size.
@@ -21,7 +21,7 @@ def curate_training_image(TI: np.ndarray, template_size: list[int], percentage_2
     Tuple[np.ndarray, np.ndarray]: A tuple containing the input features (data_x) and the target outputs (data_y).
     """
 
-    TI_x, TI_y, TI_z = TI.shape
+    TI_x, TI_y, TI_z = TI_3D.shape
     padding_x, padding_y, padding_z = int((template_size[0]-1)/2), int((template_size[1]-1)/2), int((template_size[2]-1)/2)
     
     # extract the training image to make a tabular form data
@@ -38,7 +38,7 @@ def curate_training_image(TI: np.ndarray, template_size: list[int], percentage_2
                                                                 range(template_size[1]),
                                                                 range(template_size[2]))):
                     
-                    data[xi + yi*template_size_x + zi*template_size_x*template_size_y, i] = TI[x+(tx-padding_x), y+(ty-padding_y), z+(tz-padding_z)]
+                    data[xi + yi*template_size_x + zi*template_size_x*template_size_y, i] = TI_3D[x+(tx-padding_x), y+(ty-padding_y), z+(tz-padding_z)]
 
     # train some ML model the above tabular data
     center_index = int((np.prod(template_size)-1)/2)
