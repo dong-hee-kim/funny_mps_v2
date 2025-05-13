@@ -117,6 +117,7 @@ def multi_points_modeling(TI_3D,
     # for one iteration - randomly generate realization
     np.random.seed(random_seed)
     np.random.shuffle(random_path.T)
+
     if soft_data is None:
         return _run_mps(realization, facies_ratio, unique_facies, 
                         data_x, data_y, flag, random_path, 
@@ -287,8 +288,10 @@ def _preprocessing_MPS(TI_3D,
     y_0, y_1 = int(0 +padding_y), int(realization.shape[1] - padding_y)
     z_0, z_1 = int(0 +padding_z), int(realization.shape[2] - padding_z)
     xx, yy, zz = np.meshgrid(range(x_0, x_1), range(y_0, y_1), range(z_0, z_1))
-    random_path = np.array([i.flatten() for i in [xx, yy, zz]])x
+    random_path = np.array([i.flatten() for i in [xx, yy, zz]])
     # TODO: random path without hard data
+
+
     return realization, [facies_ratio, unique_facies], [data_x, data_y, flag], random_path
 
 def multi_points_modeling_multi_scaled(TI, n_level, level_size,
