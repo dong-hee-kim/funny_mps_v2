@@ -5,7 +5,8 @@ import sys
 sys.path.insert(0, './script')
 from curate_training_image import curate_training_image
 import time
-import pandas as pd
+from functools import lru_cache
+
 
 @jit(nopython=True)
 def fast_bincount(arr, minlength):
@@ -79,11 +80,11 @@ def predictive_model(data_x, data_y,
 
     return counts / counts.sum()
 
-def multi_points_modeling(TI_3D, 
+def multi_points_modeling(TI, 
                           template_size, 
                           random_seed, 
                           real_nx, real_ny, real_nz, 
-                          hard_data,
+                          hard_data = None,
                           soft_data = None,
                           verbose = False):
 
@@ -92,13 +93,13 @@ def multi_points_modeling(TI_3D,
     optionally conditioned to hard data.
 
     Args:
-        TI_3D (np.ndarray): The 3D Training Image (facies).
+        TI (np.ndarray): The 3D Training Image (facies).
         template_size (list[int]): Dimensions (x, y, z) of the template. Must be odd.
         random_seed (int): Seed for the random number generator.
         real_nx (int): X-dimension of the desired realization grid.
         real_ny (int): Y-dimension of the desired realization grid.
         real_nz (int): Z-dimension of the desired realization grid.
-        hard_data (pd.DateFrame, optional): Grid of known values to condition the simulation.
+        hard_data (np.ndarray, optional): Grid of known values to condition the simulation.
                                          Shape should match (real_nx, real_ny, real_nz).
                                          Use a sentinel value (e.g., -1) for unknown nodes.
                                          Defaults to None (unconditional simulation).
@@ -108,17 +109,17 @@ def multi_points_modeling(TI_3D,
     Returns:
         np.ndarray: The generated realization grid with shape (real_nx, real_ny, real_nz).
     """
-    realization, [facies_ratio, unique_facies], [data_x, data_y, flag], random_path = _preprocessing_MPS(TI_3D,
+    realization, [facies_ratio, unique_facies], [data_x, data_y, flag], random_path = _preprocessing_MPS(TI, 
                                                                                                     template_size,  
                                                                                                     real_nx, real_ny, real_nz, 
                                                                                                     hard_data = hard_data,
                                                                                                     verbose = verbose)
     padding_x, padding_y, padding_z = int((template_size[0]-1)/2), int((template_size[1]-1)/2), int((template_size[2]-1)/2)
 
+    
     # for one iteration - randomly generate realization
     np.random.seed(random_seed)
     np.random.shuffle(random_path.T)
-
     if soft_data is None:
         return _run_mps(realization, facies_ratio, unique_facies, 
                         data_x, data_y, flag, random_path, 
@@ -128,7 +129,6 @@ def multi_points_modeling(TI_3D,
                         data_x, data_y, flag, random_path, 
                         padding_x, padding_y, padding_z, soft_data=soft_data,
                         verbose = verbose)
-        
 def _run_mps(realization, facies_ratio, unique_facies, 
              data_x, data_y, flag, random_path, 
              padding_x, padding_y, padding_z,
@@ -154,25 +154,44 @@ def _run_mps(realization, facies_ratio, unique_facies,
         np.ndarray: The updated realization grid with shape (real_nx, real_ny, real_nz)
     """
     if verbose:
-        print("Running one iteration of the MPS simulation...")
+        print("... starting [_run_mps]")
         start = time.time()
+
+    # Better cache key using binary hash
+    def make_hashable_key(input_x_array):
+        return input_x_array.tobytes()
+
+    # Cached predictive model
+    @lru_cache(maxsize=20000)
+    def cached_predictive_model_from_bytes(input_x_bytes):
+        input_x_array = np.frombuffer(input_x_bytes, dtype=np.int16).reshape(1, -1)
+        return predictive_model(data_x, data_y, input_x_array, facies_ratio, unique_facies)
+
+    nx, ny, nz = realization.shape
+
     for ii, jj, kk in zip(random_path[0].T, random_path[1].T, random_path[2].T):
         if realization[ii, jj, kk] != -1:
             continue
-        template = realization[ii-padding_x:ii+(padding_x+1),
-                            jj-padding_y:jj+(padding_y+1),
-                            kk-padding_z:kk+(padding_z+1)].copy().flatten()
-        input_x = template[flag].reshape(1,-1)  
-        realization[ii, jj, kk] = np.random.choice(unique_facies, 
-                                                   p=predictive_model(data_x, 
-                                                                      data_y, 
-                                                                      input_x, 
-                                                                      facies_ratio, 
-                                                                      unique_facies))
-    realization =  _remove_padding(realization, padding_x, padding_y, padding_z)
+
+        # Efficient ravel and index slicing
+        template = realization[
+            ii - padding_x : ii + padding_x + 1,
+            jj - padding_y : jj + padding_y + 1,
+            kk - padding_z : kk + padding_z + 1
+        ].ravel()
+
+        input_x = template[flag]
+        input_key = make_hashable_key(input_x.astype(np.int16))  # ensure dtype for consistent hashing
+        prob = cached_predictive_model_from_bytes(input_key)
+
+        realization[ii, jj, kk] = np.random.choice(unique_facies, p=prob)
+
+    realization = _remove_padding(realization, padding_x, padding_y, padding_z)
+
     if verbose:
         end = time.time()
-        print(f"One iteration of the MPS simulation completed in {end-start:.2f} seconds.")
+        print(f"==> finishing [_run_mps] in {end-start:.2f} seconds.")
+
     return realization
 
 
@@ -203,7 +222,6 @@ def _run_mps_w_soft_data(realization, facies_ratio, unique_facies,
     if verbose:
         print("Running one iteration of the MPS simulation...")
         start = time.time()
-
     for ii, jj, kk in zip(random_path[0].T, random_path[1].T, random_path[2].T):
         if realization[ii, jj, kk] != -1:
             continue
@@ -213,7 +231,7 @@ def _run_mps_w_soft_data(realization, facies_ratio, unique_facies,
         input_x = template[flag].reshape(1,-1)  
         tau = soft_data[ii-padding_x, jj-padding_y, kk-padding_z, :]
 
-        prob = predictive_model(data_x, data_y, input_x, facies_ratio, unique_facies)*tau
+        prob = predictive_model(data_x, data_y,  input_x,  facies_ratio, unique_facies)*tau
         prob = prob/np.sum(prob)
         realization[ii, jj, kk] = np.random.choice(unique_facies, 
                                                 p=prob)
@@ -244,22 +262,22 @@ def _remove_padding(realization, padding_x, padding_y, padding_z):
     else:
         return realization[padding_x:-padding_x, padding_y:-padding_y]
 
-def _preprocessing_MPS(TI_3D, 
+def _preprocessing_MPS(TI, 
                       template_size, 
                       real_nx, real_ny, real_nz, 
-                      hard_data,
+                      hard_data = None,
                       verbose = False):
     
     """
-    Preprocess the Training Image (TI_3D) for MPS.
+    Preprocess the Training Image (TI) for MPS.
 
     Args:
-        TI_3D (np.ndarray): The 3D Training Image (facies).
+        TI (np.ndarray): The 3D Training Image (facies).
         template_size (list[int]): Dimensions (x, y, z) of the template. Must be odd.
         real_nx (int): X-dimension of the desired realization grid.
         real_ny (int): Y-dimension of the desired realization grid.
         real_nz (int): Z-dimension of the desired realization grid.
-        hard_data (Optional[pd.DataFrame], optional): Grid of known values to condition the simulation.
+        hard_data (Optional[np.ndarray], optional): Grid of known values to condition the simulation.
                                                  Shape should match (real_nx, real_ny, real_nz).
                                                  Use a sentinel value (e.g., -1) for unknown nodes.
                                                  Defaults to None (unconditional simulation).
@@ -271,68 +289,77 @@ def _preprocessing_MPS(TI_3D,
                                                     a list of the input features (data_x), target outputs (data_y), and a boolean mask (flag),
                                                     and a 3D array of random coordinates to visit in order.
     """
-    unique_facies = list(np.unique(TI_3D).astype(np.int8))
-    facies_ratio = [np.sum(TI_3D==f)/np.prod(TI_3D.shape) for f in unique_facies]
+    unique_facies = list(np.unique(TI).astype(np.int8))
+    facies_ratio = [np.sum(TI==f)/np.prod(TI.shape) for f in unique_facies]
     padding_x, padding_y, padding_z = int((template_size[0]-1)/2), int((template_size[1]-1)/2), int((template_size[2]-1)/2)
-    data_x, data_y, flag = curate_training_image(TI_3D, template_size, 1.0)
-    realization = np.ones((real_nx+2*padding_x, real_ny+2*padding_y, real_nz+2*padding_z))*-1
+
+    data_x, data_y, flag = curate_training_image(TI, template_size, 1.0, verbose = verbose)
+
+    # TODO: generate model
+    realization = np.ones((real_nx+2*padding_x, real_ny+2*padding_x, real_nz+2*padding_z))*-1
     if hard_data is not None:
         if padding_z != 0:
             realization[padding_x:-padding_x, padding_y:-padding_y, padding_z:-padding_z] = hard_data
         else:
             realization[padding_x:-padding_x, padding_y:-padding_y, :] = hard_data
         if verbose:
-            print('hard data is conditioned')
+            print('... [_preprocessing_MPS] hard data is conditioned')
     x_0, x_1 = int(0 +padding_x), int(realization.shape[0] - padding_x)
     y_0, y_1 = int(0 +padding_y), int(realization.shape[1] - padding_y)
     z_0, z_1 = int(0 +padding_z), int(realization.shape[2] - padding_z)
     xx, yy, zz = np.meshgrid(range(x_0, x_1), range(y_0, y_1), range(z_0, z_1))
     random_path = np.array([i.flatten() for i in [xx, yy, zz]])
-
     return realization, [facies_ratio, unique_facies], [data_x, data_y, flag], random_path
 
-def multi_points_modeling_multi_scaled(TI_3D, n_level, level_size,
+
+    
+def multi_points_modeling_multi_scaled(TI, n_level, level_size,
                                       template_size, 
                                       random_seed, 
-                                      real_nx, real_ny, real_nz,
-                                      hard_data,
-                                      soft_data = None, 
-                                      verbose = False):
+                                      real_nx, real_ny, real_nz, 
+                                      hard_data = None, 
+                                      verbose = False,
+                                      return_muti_scale_real = False):
     
     TI_s, grid_size_s = [], []
     nx, ny, nz = real_nx, real_ny, real_nz
-
     for level in range(n_level):
-        TI_s.append(TI_3D[::level_size**level, ::level_size**level, ::level_size**level])
+        TI_s.append(TI[::level_size**level, ::level_size**level, ::level_size**level])
         grid_size_s.append((nx, ny, nz))
         nx, ny, nz = round(nx/level_size), round(ny/level_size), round(nz/level_size)
+
 
     real_s = []
     if hard_data is None:
         real = np.ones(grid_size_s[-1]) * -1
     else:
-        real = np.ones(grid_size_s[-1]) * -1
-        for _, row in hard_data.iterrows():
-            hard_x = int(row['x'])
-            hard_y = int(row['y'])
-            hard_z = int(row['z'])
-            real[hard_x, hard_y, hard_z] = row['facies']
-            real_s.append(real)
-        
+        real = hard_data
+    
+    if verbose:
+        print('[MPS] multi-scale MPS starts')
     for idx, (level, TI_at_level, grid_size_at_level) in enumerate(zip(range(n_level)[::-1],TI_s[::-1], grid_size_s[::-1])):
+        if verbose:
+            print("---"*10)
+            print(f'<Scale {level} start> Grid size is {grid_size_at_level}')
         real = multi_points_modeling(TI_at_level, 
                                     template_size, 
                                     random_seed, 
                                     grid_size_at_level[0], grid_size_at_level[1], grid_size_at_level[2], 
                                     real, 
-                                    soft_data,
-                                    verbose)
+                                    verbose=verbose)
         real_s.append(real)
-        if level == 0:
+        if verbose:
+            print(f'<Scale {level} start> Done')
+        if level == 1:
             break
-        # from coarse realization to fine realization
+
         real_next = np.ones(grid_size_s[level-1]) * -1
         real_next[1::level_size, 1::level_size, 1::level_size] = real
         real = real_next.copy()
+        print('no no no')
+
+    if return_muti_scale_real:
+        return real_s
+    else:
+        return real
     
-    return real
