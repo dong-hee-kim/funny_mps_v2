@@ -6,8 +6,27 @@ sys.path.insert(0, './script')
 from curate_training_image import curate_training_image
 import time
 from functools import lru_cache
+import pyvista as pv
+import numpy as np
 
+def visualize_TI_3D_pyvista(TI_3D):
+    grid = pv.ImageData()
 
+    # Set grid dimensions (+1 because dimensions are points, not cells)
+    grid.dimensions = np.array(TI_3D.shape) + 1  # (nx+1, ny+1, nz+1)
+
+    # Set spacing and origin
+    grid.spacing = (1, 1, 1)
+    grid.origin = (0, 0, 0)
+
+    # Flatten the 3D facies values and assign to cell data
+    grid.cell_data["Facies"] = TI_3D.flatten(order="F")  # Fortran order for column-major
+
+    # Create plotter and add volume
+    plotter = pv.Plotter()
+    plotter.add_mesh(grid, scalars="Facies", cmap="viridis", show_scalar_bar=True)
+    plotter.show()
+    
 @jit(nopython=True)
 def fast_bincount(arr, minlength):
     """
@@ -80,7 +99,7 @@ def predictive_model(data_x, data_y,
 
     return counts / counts.sum()
 
-def multi_points_modeling(TI, 
+def multi_points_modeling(TI_3D, 
                           template_size, 
                           random_seed, 
                           real_nx, real_ny, real_nz, 
@@ -93,7 +112,7 @@ def multi_points_modeling(TI,
     optionally conditioned to hard data.
 
     Args:
-        TI (np.ndarray): The 3D Training Image (facies).
+        TI_3D (np.ndarray): The 3D Training Image (facies).
         template_size (list[int]): Dimensions (x, y, z) of the template. Must be odd.
         random_seed (int): Seed for the random number generator.
         real_nx (int): X-dimension of the desired realization grid.
@@ -109,7 +128,7 @@ def multi_points_modeling(TI,
     Returns:
         np.ndarray: The generated realization grid with shape (real_nx, real_ny, real_nz).
     """
-    realization, [facies_ratio, unique_facies], [data_x, data_y, flag], random_path = _preprocessing_MPS(TI, 
+    realization, [facies_ratio, unique_facies], [data_x, data_y, flag], random_path = _preprocessing_MPS(TI_3D, 
                                                                                                     template_size,  
                                                                                                     real_nx, real_ny, real_nz, 
                                                                                                     hard_data = hard_data,
@@ -262,17 +281,17 @@ def _remove_padding(realization, padding_x, padding_y, padding_z):
     else:
         return realization[padding_x:-padding_x, padding_y:-padding_y]
 
-def _preprocessing_MPS(TI, 
+def _preprocessing_MPS(TI_3D, 
                       template_size, 
                       real_nx, real_ny, real_nz, 
                       hard_data = None,
                       verbose = False):
     
     """
-    Preprocess the Training Image (TI) for MPS.
+    Preprocess the Training Image (TI_3D) for MPS.
 
     Args:
-        TI (np.ndarray): The 3D Training Image (facies).
+        TI_3D (np.ndarray): The 3D Training Image (facies).
         template_size (list[int]): Dimensions (x, y, z) of the template. Must be odd.
         real_nx (int): X-dimension of the desired realization grid.
         real_ny (int): Y-dimension of the desired realization grid.
@@ -289,14 +308,21 @@ def _preprocessing_MPS(TI,
                                                     a list of the input features (data_x), target outputs (data_y), and a boolean mask (flag),
                                                     and a 3D array of random coordinates to visit in order.
     """
-    unique_facies = list(np.unique(TI).astype(np.int8))
-    facies_ratio = [np.sum(TI==f)/np.prod(TI.shape) for f in unique_facies]
+    unique_facies = list(np.unique(TI_3D).astype(np.int8))
+    facies_ratio = [np.sum(TI_3D==f)/np.prod(TI_3D.shape) for f in unique_facies]
     padding_x, padding_y, padding_z = int((template_size[0]-1)/2), int((template_size[1]-1)/2), int((template_size[2]-1)/2)
 
-    data_x, data_y, flag = curate_training_image(TI, template_size, 1.0, verbose = verbose)
+    data_x, data_y, flag = curate_training_image(TI_3D, template_size, 1.0, verbose = verbose)
 
     # TODO: generate model
     realization = np.ones((real_nx+2*padding_x, real_ny+2*padding_x, real_nz+2*padding_z))*-1
+    # if hard_data is not None:
+    #     hd_shape = realization[padding_x:-padding_x, padding_y:-padding_y, padding_z:-padding_z].shape
+    #     if isinstance(hard_data, np.ndarray) and hard_data.shape == hd_shape:
+    #         realization[padding_x:-padding_x, padding_y:-padding_y, padding_z:-padding_z] = hard_data
+    # else:
+    #     raise ValueError(f"Shape mismatch: expected hard_data shape {hd_shape}, got {hard_data.shape}")
+
     if hard_data is not None:
         if padding_z != 0:
             realization[padding_x:-padding_x, padding_y:-padding_y, padding_z:-padding_z] = hard_data
@@ -311,8 +337,56 @@ def _preprocessing_MPS(TI,
     random_path = np.array([i.flatten() for i in [xx, yy, zz]])
     return realization, [facies_ratio, unique_facies], [data_x, data_y, flag], random_path
 
-
+# def multi_points_modeling_multi_scaled(TI, n_level, level_size,
+#                                       template_size, 
+#                                       random_seed, 
+#                                       real_nx, real_ny, real_nz, 
+#                                       hard_data = None, 
+#                                       verbose = False,
+#                                       return_muti_scale_real = False):
     
+#     TI_s, grid_size_s = [], []
+#     nx, ny, nz = real_nx, real_ny, real_nz
+#     for level in range(n_level):
+#         TI_s.append(TI[::level_size**level, ::level_size**level, ::level_size**level])
+#         grid_size_s.append((nx, ny, nz))
+#         nx, ny, nz = round(nx/level_size), round(ny/level_size), round(nz/level_size)
+
+
+#     real_s = []
+#     if hard_data is None:
+#         real = np.ones(grid_size_s[-1]) * -1
+#     else:
+#         real = hard_data
+    
+#     if verbose:
+#         print('[MPS] multi-scale MPS starts')
+#     for idx, (level, TI_at_level, grid_size_at_level) in enumerate(zip(range(n_level)[::-1],TI_s[::-1], grid_size_s[::-1])):
+#         if verbose:
+#             print("---"*10)
+#             print(f'<Scale {level} start> Grid size is {grid_size_at_level}')
+#         real = multi_points_modeling(TI_at_level, 
+#                                     template_size, 
+#                                     random_seed, 
+#                                     grid_size_at_level[0], grid_size_at_level[1], grid_size_at_level[2], 
+#                                     real, 
+#                                     verbose=verbose)
+#         real_s.append(real)
+#         if verbose:
+#             print(f'<Scale {level} start> Done')
+#         if level == 1:
+#             break
+
+#         real_next = np.ones(grid_size_s[level-1]) * -1
+#         real_next[1::level_size, 1::level_size, 1::level_size] = real
+#         real = real_next.copy()
+#         print('no no no')
+
+#     if return_muti_scale_real:
+#         return real_s
+#     else:
+#         return real
+
 def multi_points_modeling_multi_scaled(TI, n_level, level_size,
                                       template_size, 
                                       random_seed, 
@@ -320,7 +394,7 @@ def multi_points_modeling_multi_scaled(TI, n_level, level_size,
                                       hard_data = None, 
                                       verbose = False,
                                       return_muti_scale_real = False):
-    
+
     TI_s, grid_size_s = [], []
     nx, ny, nz = real_nx, real_ny, real_nz
     for level in range(n_level):
@@ -328,13 +402,24 @@ def multi_points_modeling_multi_scaled(TI, n_level, level_size,
         grid_size_s.append((nx, ny, nz))
         nx, ny, nz = round(nx/level_size), round(ny/level_size), round(nz/level_size)
 
-
     real_s = []
-    if hard_data is None:
-        real = np.ones(grid_size_s[-1]) * -1
+    if hard_data is not None:
+        hd_all = [None] * n_level
+        hd_all[-1] = hard_data.copy()
+        for l in range(n_level - 2, -1, -1):
+            scale = level_size ** (n_level - 1 - l)
+            df = hard_data.copy()
+            df['x'] = (df['x'] // scale).astype(int)
+            df['y'] = (df['y'] // scale).astype(int)
+            df['z'] = (df['z'] // scale).astype(int)
+            grid_shape = grid_size_s[l]
+            arr = np.ones(grid_shape) * -1
+            for _, row in df.iterrows():
+                arr[int(row['x']), int(row['y']), int(row['z'])] = row['facies']
+            hd_all[l] = arr
     else:
-        real = hard_data
-    
+        hd_all = [None] * n_level
+
     if verbose:
         print('[MPS] multi-scale MPS starts')
     for idx, (level, TI_at_level, grid_size_at_level) in enumerate(zip(range(n_level)[::-1],TI_s[::-1], grid_size_s[::-1])):
@@ -345,14 +430,13 @@ def multi_points_modeling_multi_scaled(TI, n_level, level_size,
                                     template_size, 
                                     random_seed, 
                                     grid_size_at_level[0], grid_size_at_level[1], grid_size_at_level[2], 
-                                    real, 
+                                    hd_all[level], 
                                     verbose=verbose)
         real_s.append(real)
         if verbose:
             print(f'<Scale {level} start> Done')
         if level == 1:
             break
-
         real_next = np.ones(grid_size_s[level-1]) * -1
         real_next[1::level_size, 1::level_size, 1::level_size] = real
         real = real_next.copy()
@@ -362,4 +446,3 @@ def multi_points_modeling_multi_scaled(TI, n_level, level_size,
         return real_s
     else:
         return real
-    
