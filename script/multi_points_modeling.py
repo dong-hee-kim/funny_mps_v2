@@ -8,7 +8,7 @@ import time
 from functools import lru_cache
 import pyvista as pv
 import numpy as np
-
+import pandas as pd
 def visualize_TI_3D_pyvista(TI_3D):
     grid = pv.ImageData()
 
@@ -25,6 +25,14 @@ def visualize_TI_3D_pyvista(TI_3D):
     # Create plotter and add volume
     plotter = pv.Plotter()
     plotter.add_mesh(grid, scalars="Facies", cmap="viridis", show_scalar_bar=True)
+    
+    # Add axes with labels
+    plotter.show_axes()
+    plotter.add_axes()
+    plotter.add_text("X: Left-Right\nY: Front-Back\nZ: Bottom-Top", position="upper_left", font_size=10)
+
+    # Optional: set camera to see axes better
+    plotter.view_vector((1, 1, 1))
     plotter.show()
     
 @jit(nopython=True)
@@ -103,7 +111,7 @@ def multi_points_modeling(TI_3D,
                           template_size, 
                           random_seed, 
                           real_nx, real_ny, real_nz, 
-                          hard_data = None,
+                          hard_data,
                           soft_data = None,
                           verbose = False):
 
@@ -213,7 +221,6 @@ def _run_mps(realization, facies_ratio, unique_facies,
 
     return realization
 
-
 def _run_mps_w_soft_data(realization, facies_ratio, unique_facies, 
              data_x, data_y, flag, random_path, 
              padding_x, padding_y, padding_z, soft_data,
@@ -284,7 +291,7 @@ def _remove_padding(realization, padding_x, padding_y, padding_z):
 def _preprocessing_MPS(TI_3D, 
                       template_size, 
                       real_nx, real_ny, real_nz, 
-                      hard_data = None,
+                      hard_data,
                       verbose = False):
     
     """
@@ -311,18 +318,10 @@ def _preprocessing_MPS(TI_3D,
     unique_facies = list(np.unique(TI_3D).astype(np.int8))
     facies_ratio = [np.sum(TI_3D==f)/np.prod(TI_3D.shape) for f in unique_facies]
     padding_x, padding_y, padding_z = int((template_size[0]-1)/2), int((template_size[1]-1)/2), int((template_size[2]-1)/2)
-
     data_x, data_y, flag = curate_training_image(TI_3D, template_size, 1.0, verbose = verbose)
-
+    
     # TODO: generate model
     realization = np.ones((real_nx+2*padding_x, real_ny+2*padding_x, real_nz+2*padding_z))*-1
-    # if hard_data is not None:
-    #     hd_shape = realization[padding_x:-padding_x, padding_y:-padding_y, padding_z:-padding_z].shape
-    #     if isinstance(hard_data, np.ndarray) and hard_data.shape == hd_shape:
-    #         realization[padding_x:-padding_x, padding_y:-padding_y, padding_z:-padding_z] = hard_data
-    # else:
-    #     raise ValueError(f"Shape mismatch: expected hard_data shape {hd_shape}, got {hard_data.shape}")
-
     if hard_data is not None:
         if padding_z != 0:
             realization[padding_x:-padding_x, padding_y:-padding_y, padding_z:-padding_z] = hard_data
@@ -341,24 +340,33 @@ def multi_points_modeling_multi_scaled(TI, n_level, level_size,
                                       template_size, 
                                       random_seed, 
                                       real_nx, real_ny, real_nz, 
-                                      hard_data = None, 
+                                      hard_data, 
                                       verbose = False,
                                       return_muti_scale_real = False):
     
-    TI_s, grid_size_s = [], []
+    TI_s, grid_size_s, real_s = [], [], []
     nx, ny, nz = real_nx, real_ny, real_nz
+
     for level in range(n_level):
-        TI_s.append(TI[::level_size**level, ::level_size**level, ::level_size**level])
+        TI_s.append(TI[::level_size**level, ::level_size**level, ::round(level_size**level)])
         grid_size_s.append((nx, ny, nz))
-        nx, ny, nz = round(nx/level_size), round(ny/level_size), round(nz/level_size)
+        real_s.append(np.ones((nx, ny, nz)) * -1)  
+        nx, ny, nz = round(nx / level_size), round(ny / level_size), round(nz / level_size)
 
-
-    real_s = []
     if hard_data is None:
         real = np.ones(grid_size_s[-1]) * -1
     else:
-        real = hard_data
-    
+        real = np.ones(grid_size_s[-1]) * -1
+        for _, row in hard_data.iterrows():
+            x, y, z = int(row['x']), int(row['y']), int(row['z'])
+            facies_val = row['facies']
+            for level in range(n_level):
+                nx, ny, nz = grid_size_s[level]
+                if 0 <= x < nx and 0 <= y < ny and 0 <= z < nz:
+                    real_s[level][x, y, z] = facies_val
+                x, y, z = x // level_size, y // level_size, z // level_size
+        real = real_s[-1]
+
     if verbose:
         print('[MPS] multi-scale MPS starts')
     for idx, (level, TI_at_level, grid_size_at_level) in enumerate(zip(range(n_level)[::-1],TI_s[::-1], grid_size_s[::-1])):
@@ -372,11 +380,11 @@ def multi_points_modeling_multi_scaled(TI, n_level, level_size,
                                     real, 
                                     verbose=verbose)
         real_s.append(real)
+        
         if verbose:
             print(f'<Scale {level} start> Done')
         if level == 1:
-            break
-
+            break 
         real_next = np.ones(grid_size_s[level-1]) * -1
         real_next[1::level_size, 1::level_size, 1::level_size] = real
         real = real_next.copy()
