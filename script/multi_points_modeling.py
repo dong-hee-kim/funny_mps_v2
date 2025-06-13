@@ -338,7 +338,7 @@ def multi_points_modeling_multi_scaled(TI, n_level, level_size,
                                       real_nx, real_ny, real_nz, 
                                       hard_data, 
                                       verbose = False,
-                                      return_muti_scale_real = False):
+                                      return_multi_scale_real = False):
     
     TI_s, grid_size_s, real_s = [], [], []
     nx, ny, nz = real_nx, real_ny, real_nz
@@ -360,7 +360,7 @@ def multi_points_modeling_multi_scaled(TI, n_level, level_size,
                 nx, ny, nz = grid_size_s[level]
                 if 0 <= x < nx and 0 <= y < ny and 0 <= z < nz:
                     real_s[level][x, y, z] = facies_val
-                x, y, z = x // level_size, y // level_size, z // level_size
+                x, y, z = round(x / level_size), round(y / level_size), round(z / level_size)
         real = real_s[-1]
 
     if verbose:
@@ -385,19 +385,19 @@ def multi_points_modeling_multi_scaled(TI, n_level, level_size,
             break 
         real_next = np.ones(grid_size_s[level-1]) * -1
         real_next[1::level_size, 1::level_size, 1::level_size] = real
-
         if hard_data is not None:
             for _, row in hard_data.iterrows():
                 x, y, z = int(row['x']), int(row['y']), int(row['z'])
                 facies_val = row['facies']
                 if 0 <= x < real_next.shape[0] and 0 <= y < real_next.shape[1] and 0 <= z < real_next.shape[2]:
-                    real_next[x, y, z] = facies_val
+                    if real_next[x, y, z] == -1:
+                        real_next[x, y, z] = facies_val
 
         real = real_next.copy()
 
         print('no no no')
-
-    if return_muti_scale_real:
+    
+    if return_multi_scale_real:
         return real_s
     else:
         return real
