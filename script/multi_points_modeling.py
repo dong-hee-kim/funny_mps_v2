@@ -1,40 +1,67 @@
 
 from numba import jit
-import numpy as np
+from functools import lru_cache
 import sys
 sys.path.insert(0, './script')
 from curate_training_image import curate_training_image
-import time
-from functools import lru_cache
-import pyvista as pv
 import numpy as np
+import time
+import pyvista as pv
 import pandas as pd
 
-def visualize_TI_3D_pyvista(TI_3D):
+def visualize_3D_pyvista_with_well(realization, num_of_wells, well_locs):
+    if len(well_locs) != num_of_wells:
+        raise ValueError(f"well_locs: ({len(well_locs)}) are not mattch with number of wells: ({num_of_wells}).")
     grid = pv.ImageData()
 
     # Set grid dimensions (+1 because dimensions are points, not cells)
-    grid.dimensions = np.array(TI_3D.shape) + 1  # (nx+1, ny+1, nz+1)
+    grid.dimensions = np.array(realization.shape) + 1  # (nx+1, ny+1, nz+1)
 
     # Set spacing and origin
     grid.spacing = (1, 1, 1)
     grid.origin = (0, 0, 0)
 
     # Flatten the 3D facies values and assign to cell data
-    grid.cell_data["Facies"] = TI_3D.flatten(order="F")  # Fortran order for column-major
+    grid.cell_data["Facies"] = realization.flatten(order="F")  # Fortran order for column-major
 
     # Create plotter and add volume
     plotter = pv.Plotter()
     plotter.add_mesh(grid, scalars="Facies", cmap="viridis", show_scalar_bar=True)
     
-    # Add axes with labels
-    plotter.show_axes()
-    plotter.add_axes()
-    plotter.add_text("X: Left-Right\nY: Front-Back\nZ: Bottom-Top", position="upper_left", font_size=10)
+    # add wells
+    z_top = realization.shape[2] + 5
+    for i in range(num_of_wells):
+        wx, wy = well_locs[i]
+        start = (float(wx) + 0.5, float(wy) + 0.5, 0.0)
+        end = (float(wx) + 0.5, float(wy) + 0.5, float(z_top))
+        well_line = pv.Line(start, end)
+        plotter.add_mesh(well_line, color="blue", line_width=5)
+        plotter.add_point_labels([end], [f"well {i+1}"], font_size = 18, point_color = "red", text_color = "red")
 
-    # Optional: set camera to see axes better
+    # Add axes and view settings
+    plotter.show_axes()
     plotter.view_vector((1, 1, 1))
+    plotter.add_text("X: Left-Right\nY: Front-Back\nZ: Bottom-Top", position="upper_left", font_size=10)
     plotter.show()
+
+
+def generating_hard_data(TI_3D, well_loc_x, well_loc_y, real_nz, num_of_wells):
+
+    unique_facies = list(np.unique(TI_3D).astype(np.int8))
+    x_list = well_loc_x.get("x", [])
+    y_list = well_loc_y.get("y", [])
+    well_coords = list(zip(x_list, y_list))[:num_of_wells]
+
+    hard_data_rows = []
+    for (x, y) in well_coords:
+        for z in range(real_nz // 2):  
+            facies = np.random.choice(unique_facies)  
+            hard_data_rows.append({'x': x, 'y': y, 'z': z, 'facies': facies})
+
+    hard_data = pd.DataFrame(hard_data_rows)
+    hard_data = hard_data.sort_values(by=['x', 'y', 'z'])
+    
+    return hard_data
     
 @jit(nopython=True)
 def fast_bincount(arr, minlength):
@@ -317,7 +344,7 @@ def _preprocessing_MPS(TI_3D,
     padding_x, padding_y, padding_z = int((template_size[0]-1)/2), int((template_size[1]-1)/2), int((template_size[2]-1)/2)
     data_x, data_y, flag = curate_training_image(TI_3D, template_size, 1.0, verbose = verbose)
     # TODO: generate model
-    realization = np.ones((real_nx+2*padding_x, real_ny+2*padding_x, real_nz+2*padding_z))*-1
+    realization = np.ones((real_nx+2*padding_x, real_ny+2*padding_y, real_nz+2*padding_z))*-1
     if hard_data is not None:
         if padding_z != 0:
             realization[padding_x:-padding_x, padding_y:-padding_y, padding_z:-padding_z] = hard_data
@@ -385,6 +412,7 @@ def multi_points_modeling_multi_scaled(TI, n_level, level_size,
             break 
         real_next = np.ones(grid_size_s[level-1]) * -1
         real_next[1::level_size, 1::level_size, 1::level_size] = real
+
         if hard_data is not None:
             for _, row in hard_data.iterrows():
                 x, y, z = int(row['x']), int(row['y']), int(row['z'])
@@ -394,8 +422,6 @@ def multi_points_modeling_multi_scaled(TI, n_level, level_size,
                         real_next[x, y, z] = facies_val
 
         real = real_next.copy()
-
-        print('no no no')
     
     if return_multi_scale_real:
         return real_s
